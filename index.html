@@ -1,0 +1,1723 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>FountainQR · 预编码喷泉码循环二维码传输工具</title>
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Google Fonts: Inter & JetBrains Mono -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <!-- JSZip 多文件自动打包 -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+  <!-- QRCode-Generator 稳定二维码生成 -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js"></script>
+  <!-- jsQR 像素级二维码解码兜底 -->
+  <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script>
+
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['Inter', '-apple-system', 'BlinkMacSystemFont', 'sans-serif'],
+            mono: ['JetBrains Mono', 'monospace'],
+          }
+        }
+      }
+    };
+  </script>
+  <style>
+    body {
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      background-color: #f1f5f9;
+      color: #0f172a;
+    }
+    .font-mono {
+      font-family: 'JetBrains Mono', monospace;
+    }
+    /* 纯净二维码像素渲染：拒绝抗锯齿模糊，适配 1080p 与高倍缩放屏幕 */
+    #qrCanvas {
+      image-rendering: pixelated;
+      image-rendering: crisp-edges;
+      width: min(400px, 52vh, 72vw);
+      height: min(400px, 52vh, 72vw);
+    }
+    /* 扫描框激光动画 */
+    @keyframes scanline {
+      0% { top: 10%; opacity: 0.45; }
+      50% { top: 88%; opacity: 0.95; }
+      100% { top: 10%; opacity: 0.45; }
+    }
+    .animate-scanline {
+      animation: scanline 2.2s ease-in-out infinite;
+    }
+    /* 紧凑自定义滚动条 */
+    ::-webkit-scrollbar { width: 5px; height: 5px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 9999px; }
+  </style>
+</head>
+<body class="min-h-screen lg:h-dvh lg:overflow-hidden flex flex-col bg-slate-100 text-slate-800 select-none">
+
+  <!-- 全局非阻塞通知条 -->
+  <div id="toastContainer" class="fixed top-14 right-4 z-50 flex flex-col gap-2 max-w-xs w-full pointer-events-none"></div>
+
+  <!-- 紧凑单行顶部栏 (48px) -->
+  <header class="h-12 shrink-0 bg-white border-b border-slate-200 px-3 sm:px-5 flex items-center justify-between gap-2 z-30">
+    <div class="flex items-center gap-2 min-w-0">
+      <div class="w-7 h-7 rounded-lg bg-blue-600 flex items-center justify-center text-white shrink-0 shadow-sm">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M3 7V5a2 2 0 012-2h2m10 0h2a2 2 0 012 2v2m0 10v2a2 2 0 01-2 2h-2M7 21H5a2 2 0 01-2-2v-2M7 7h3v3H7V7zm7 0h3v3h-3V7zm-7 7h3v3H7v-3zm7 0h3v3h-3v-3z" />
+        </svg>
+      </div>
+      <span class="font-bold text-sm sm:text-base tracking-tight text-slate-900 truncate">FountainQR</span>
+      <span class="hidden sm:inline-block text-[11px] font-mono px-2 py-0.5 rounded bg-blue-50 text-blue-700 border border-blue-200">LT+预编码 · ≤5MB</span>
+      <span class="hidden xl:inline-block text-xs text-slate-400 ml-2">提示：调高屏幕亮度并避免反光，收尾抗长尾预编码已启用</span>
+    </div>
+
+    <!-- 双模式切换胶囊 -->
+    <div class="flex items-center bg-slate-100 p-0.5 rounded-lg border border-slate-200 shrink-0">
+      <button id="tabSender" onclick="switchMode('sender')" class="flex items-center gap-1.5 px-3 py-1 rounded-md text-xs sm:text-sm font-semibold transition-all bg-white text-blue-600 shadow-sm cursor-pointer">
+        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
+        </svg>
+        <span>发送端</span>
+      </button>
+      <button id="tabReceiver" onclick="switchMode('receiver')" class="flex items-center gap-1.5 px-3 py-1 rounded-md text-xs sm:text-sm font-medium transition-all text-slate-600 hover:text-slate-900 cursor-pointer">
+        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z" />
+          <path stroke-linecap="round" stroke-linejoin="round" d="M15 13a3 3 0 11-6 0 3 3 0 016 0z" />
+        </svg>
+        <span>接收端</span>
+      </button>
+    </div>
+  </header>
+
+  <!-- 主工作区：严格适配 100dvh 剩余高度，1080p 无需整页滚动 -->
+  <main class="flex-1 min-h-0 max-w-6xl w-full mx-auto p-3 sm:p-4 flex flex-col">
+
+    <!-- ==================== 发送端视图 ==================== -->
+    <section id="senderView" class="flex-1 min-h-0 grid grid-cols-1 lg:grid-cols-12 gap-3 sm:gap-4">
+      
+      <!-- 左侧控制与时间预估栏 (5列) -->
+      <div class="lg:col-span-5 bg-white border border-slate-200 rounded-xl p-3.5 sm:p-4 shadow-sm flex flex-col justify-between gap-3 min-h-0 overflow-y-auto">
+        <div class="space-y-3">
+          <!-- 1. 文件选择区 -->
+          <div>
+            <div class="flex items-center justify-between mb-1.5">
+              <span class="text-xs font-semibold text-slate-700">1. 选择文件 (单文件或多文件自动 ZIP 打包)</span>
+              <span id="fileSizeBadge" class="text-[11px] font-mono px-2 py-0.5 rounded bg-slate-100 text-slate-500">上限 5.00 MB</span>
+            </div>
+
+            <!-- 未选文件时的紧凑拖拽区 -->
+            <div id="dropZone" class="relative border-2 border-dashed border-slate-300 hover:border-blue-500 bg-slate-50 hover:bg-blue-50/40 rounded-xl p-3.5 text-center transition-all cursor-pointer">
+              <input id="fileInput" type="file" multiple class="absolute inset-0 w-full h-full opacity-0 cursor-pointer" />
+              <div class="flex items-center justify-center gap-3 pointer-events-none">
+                <div class="w-9 h-9 rounded-lg bg-blue-100 text-blue-600 flex items-center justify-center shrink-0">
+                  <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+                  </svg>
+                </div>
+                <div class="text-left">
+                  <p class="text-xs sm:text-sm font-semibold text-slate-800">点击或拖拽图片 / 文档到此处</p>
+                  <p class="text-[11px] text-slate-500">支持任意格式，总大小严格限制 ≤ 5MB</p>
+                </div>
+              </div>
+            </div>
+
+            <!-- 超限错误条 -->
+            <div id="sizeErrorBanner" class="hidden mt-2 p-2.5 rounded-lg bg-rose-50 border border-rose-200 text-rose-700 text-xs flex items-center gap-2">
+              <span class="font-bold shrink-0">!</span>
+              <span id="sizeErrorText">超出 5MB 上限，已阻止加载。</span>
+            </div>
+
+            <!-- 已加载文件摘要卡片 -->
+            <div id="loadedFileCard" class="hidden mt-2 bg-slate-50 border border-slate-200 rounded-xl p-2.5">
+              <div class="flex items-center justify-between gap-2">
+                <div class="min-w-0">
+                  <p id="loadedPayloadName" class="text-xs font-mono font-semibold text-blue-700 truncate">document.pdf</p>
+                  <p id="loadedPayloadMeta" class="text-[11px] text-slate-500 mt-0.5">大小: 0 KB · CRC32: 00000000</p>
+                </div>
+                <button onclick="clearSenderPayload()" class="text-xs px-2.5 py-1 rounded-lg bg-white border border-slate-200 hover:border-rose-300 hover:text-rose-600 text-slate-600 transition-colors shrink-0 cursor-pointer">
+                  更换/清空
+                </button>
+              </div>
+              <div id="multiFileSummary" class="hidden mt-1.5 pt-1.5 border-t border-slate-200/80 text-[11px] text-slate-500 truncate"></div>
+            </div>
+          </div>
+
+          <!-- 2. 一键场景预设档位 -->
+          <div>
+            <div class="flex items-center justify-between mb-1.5">
+              <span class="text-xs font-semibold text-slate-700">2. 选择传输模式预设</span>
+              <span id="presetSpecBadge" class="text-[11px] font-mono text-slate-500">800B/帧 · 8 FPS · ECC-L</span>
+            </div>
+            <div class="grid grid-cols-3 gap-2">
+              <button type="button" onclick="applyPreset('fast')" id="presetBtn-fast" class="preset-btn p-2.5 rounded-xl border-2 border-blue-600 bg-blue-50/70 text-left transition-all cursor-pointer">
+                <div class="flex items-center justify-between">
+                  <span class="text-xs font-bold text-blue-800">高速近距离</span>
+                  <span class="text-[10px] px-1.5 py-0.2 rounded bg-blue-600 text-white font-medium">推荐</span>
+                </div>
+                <p class="text-[11px] text-blue-700/80 mt-1 leading-tight">高清屏近距离快传</p>
+              </button>
+
+              <button type="button" onclick="applyPreset('balanced')" id="presetBtn-balanced" class="preset-btn p-2.5 rounded-xl border border-slate-200 bg-white hover:border-slate-300 text-left transition-all cursor-pointer">
+                <div class="text-xs font-bold text-slate-800">均衡标准</div>
+                <p class="text-[11px] text-slate-500 mt-1 leading-tight">日常办公普通手机</p>
+              </button>
+
+              <button type="button" onclick="applyPreset('robust')" id="presetBtn-robust" class="preset-btn p-2.5 rounded-xl border border-slate-200 bg-white hover:border-slate-300 text-left transition-all cursor-pointer">
+                <div class="text-xs font-bold text-slate-800">强抗干扰</div>
+                <p class="text-[11px] text-slate-500 mt-1 leading-tight">反光/老旧摄像头</p>
+              </button>
+            </div>
+          </div>
+
+          <!-- 3. 预计传输耗时与预编码分块看板 -->
+          <div class="rounded-xl bg-gradient-to-br from-slate-900 to-slate-800 text-white p-3.5 shadow-sm">
+            <div class="flex items-center justify-between text-[11px] text-slate-300 mb-1">
+              <span class="flex items-center gap-1.5 font-medium">
+                <svg class="w-3.5 h-3.5 text-amber-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+                预计传输耗时评估
+              </span>
+              <span id="estBlocksSummary" class="font-mono text-slate-400">尚未加载文件</span>
+            </div>
+
+            <div id="estTimeMain" class="text-lg sm:text-xl font-mono font-bold text-amber-300 tracking-tight">
+              -- 秒 ~ -- 秒
+            </div>
+            <p id="estTimeDetail" class="text-[11px] text-slate-300 mt-1 leading-snug">
+              已集成约 10% 块组校验预编码，可有效缓解最后几块的长尾等待。
+            </p>
+          </div>
+        </div>
+
+        <!-- 底部操作按钮区 -->
+        <div class="pt-1 flex flex-col gap-2">
+          <button id="btnTogglePlay" onclick="togglePlay()" disabled class="w-full flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl font-semibold text-sm bg-blue-600 hover:bg-blue-700 disabled:bg-slate-200 disabled:text-slate-400 text-white shadow-sm transition-all cursor-pointer disabled:cursor-not-allowed">
+            <svg id="iconPlay" class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+            <svg id="iconPause" class="w-4 h-4 hidden" fill="currentColor" viewBox="0 0 24 24"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
+            <span id="btnPlayText">开始喷射二维码</span>
+          </button>
+
+          <button id="btnSelfLoopSim" onclick="runSelfLoopSimulation()" disabled class="w-full flex items-center justify-center gap-1.5 py-2 px-3 rounded-xl font-medium text-xs bg-slate-100 hover:bg-slate-200/80 disabled:bg-slate-50 disabled:text-slate-300 text-slate-700 border border-slate-200 transition-all cursor-pointer disabled:cursor-not-allowed">
+            <svg class="w-3.5 h-3.5 text-blue-600" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+            </svg>
+            <span>单机模拟丢包回路测试 (25% 丢包率)</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- 右侧：核心高对比度二维码发射台 (7列) -->
+      <div class="lg:col-span-7 bg-white border border-slate-200 rounded-xl p-3.5 sm:p-4 shadow-sm flex flex-col justify-between min-h-0">
+        <!-- 顶部状态条 -->
+        <div class="flex items-center justify-between gap-2 pb-2 border-b border-slate-100 shrink-0">
+          <div class="flex items-center gap-2 min-w-0">
+            <span id="txStatusDot" class="w-2.5 h-2.5 rounded-full bg-slate-300 shrink-0"></span>
+            <span id="txStatusText" class="text-xs sm:text-sm font-semibold text-slate-700 truncate">等待选择文件...</span>
+          </div>
+          <div class="flex items-center gap-3 text-xs font-mono text-slate-500 shrink-0">
+            <span>已发: <strong id="statFramesSent" class="text-slate-800">0</strong> 帧</span>
+            <span>度数: <strong id="statCurrentDegree" class="text-blue-600">-</strong></span>
+          </div>
+        </div>
+
+        <!-- 中央自适应白底二维码容器 -->
+        <div class="flex-1 min-h-0 flex items-center justify-center bg-slate-100/80 rounded-xl my-2.5 p-3">
+          <div class="bg-white p-4 sm:p-5 rounded-xl shadow-md border border-slate-200/80 flex items-center justify-center">
+            <canvas id="qrCanvas" width="360" height="360" class="block"></canvas>
+          </div>
+        </div>
+
+        <!-- 底部简洁进度参考条 -->
+        <div class="shrink-0 flex items-center justify-between text-[11px] font-mono text-slate-500 bg-slate-50 px-3 py-1.5 rounded-lg border border-slate-200/70">
+          <span>Seed: <strong id="currentSeedDisplay" class="text-slate-700">0x00000000</strong></span>
+          <span id="txElapsedText">已播放: 0.0s</span>
+          <span id="qrVersionDisplay">FQR2 Precode</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- ==================== 接收端视图 ==================== -->
+    <section id="receiverView" class="hidden flex-1 min-h-0 grid-cols-1 lg:grid-cols-12 gap-3 sm:gap-4">
+      
+      <!-- 左侧：摄像头实时扫码框 (6列) -->
+      <div class="lg:col-span-6 bg-white border border-slate-200 rounded-xl p-3.5 sm:p-4 shadow-sm flex flex-col justify-between gap-2.5 min-h-0">
+        <div class="flex items-center justify-between shrink-0">
+          <div class="flex items-center gap-2">
+            <span id="rxCamDot" class="w-2.5 h-2.5 rounded-full bg-slate-300"></span>
+            <span class="text-xs sm:text-sm font-semibold text-slate-800">摄像头扫码接收</span>
+          </div>
+          <span id="scanFpsBadge" class="text-[11px] font-mono px-2 py-0.5 rounded bg-slate-100 text-slate-600">0 FPS</span>
+        </div>
+
+        <!-- 取景框 -->
+        <div class="relative flex-1 min-h-[210px] bg-slate-900 rounded-xl overflow-hidden flex items-center justify-center">
+          <video id="cameraVideo" class="w-full h-full object-cover hidden" playsinline muted></video>
+          <canvas id="scanOffscreenCanvas" class="hidden"></canvas>
+
+          <div id="cameraPlaceholder" class="text-center p-4 max-w-xs">
+            <div class="w-11 h-11 rounded-xl bg-slate-800 text-blue-400 flex items-center justify-center mx-auto mb-2.5">
+              <svg class="w-6 h-6" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z" />
+                <path stroke-linecap="round" stroke-linejoin="round" d="M15 13a3 3 0 11-6 0 3 3 0 016 0z" />
+              </svg>
+            </div>
+            <p class="text-xs sm:text-sm font-medium text-white">点击下方按钮开启摄像头对准二维码</p>
+            <p class="text-[11px] text-slate-400 mt-1">支持任意漏帧与乱序，也支持直接 Ctrl+V 粘贴单帧截图测试</p>
+          </div>
+
+          <div id="scanOverlay" class="hidden absolute inset-0 pointer-events-none">
+            <div class="absolute inset-6 sm:inset-10 border-2 border-blue-400/60 rounded-xl">
+              <div class="absolute -top-0.5 -left-0.5 w-5 h-5 border-t-4 border-l-4 border-blue-400 rounded-tl"></div>
+              <div class="absolute -top-0.5 -right-0.5 w-5 h-5 border-t-4 border-r-4 border-blue-400 rounded-tr"></div>
+              <div class="absolute -bottom-0.5 -left-0.5 w-5 h-5 border-b-4 border-l-4 border-blue-400 rounded-bl"></div>
+              <div class="absolute -bottom-0.5 -right-0.5 w-5 h-5 border-b-4 border-r-4 border-blue-400 rounded-br"></div>
+              <div class="absolute left-2 right-2 h-0.5 bg-blue-400 animate-scanline"></div>
+            </div>
+            <div id="scanFlashIndicator" class="absolute top-2.5 left-2.5 px-2 py-0.5 rounded bg-emerald-500 text-white font-mono text-[11px] font-bold opacity-0 transition-opacity duration-150">
+              +1 有效帧
+            </div>
+          </div>
+        </div>
+
+        <!-- 摄像头与单帧导入按钮 -->
+        <div class="shrink-0 flex items-center gap-2">
+          <button id="btnToggleCamera" onclick="toggleCamera()" class="flex-1 flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl font-semibold text-xs sm:text-sm bg-blue-600 hover:bg-blue-700 text-white shadow-sm transition-all cursor-pointer">
+            <span id="btnCameraText">开启摄像头扫码</span>
+          </button>
+
+          <label class="px-3 py-2.5 rounded-xl font-medium text-xs bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200 cursor-pointer transition-all shrink-0" title="上传或按 Ctrl+V 粘贴二维码截图">
+            <span>导入截图</span>
+            <input type="file" accept="image/*" class="hidden" onchange="handleTestImageUpload(event)" />
+          </label>
+
+          <button onclick="resetReceiverState()" class="px-3 py-2.5 rounded-xl font-medium text-xs bg-slate-100 hover:bg-rose-50 text-slate-600 hover:text-rose-600 border border-slate-200 transition-all cursor-pointer shrink-0">
+            重置
+          </button>
+        </div>
+      </div>
+
+      <!-- 右侧：严格真实进度、缓存方程数、分块矩阵与保守 ETA (6列) -->
+      <div class="lg:col-span-6 bg-white border border-slate-200 rounded-xl p-3.5 sm:p-4 shadow-sm flex flex-col justify-between gap-2.5 min-h-0 overflow-y-auto">
+        <div class="space-y-2.5">
+          <!-- 文件信息与严格真实百分比 -->
+          <div class="flex items-start justify-between gap-2">
+            <div class="min-w-0">
+              <div class="flex items-center gap-1.5">
+                <h2 class="text-xs sm:text-sm font-bold text-slate-800">真实原始块还原进度</h2>
+                <span class="text-[10px] font-mono px-1.5 py-0.2 rounded bg-emerald-50 text-emerald-700 border border-emerald-200">已解原始块 / k</span>
+              </div>
+              <p id="rxPayloadInfo" class="text-xs font-mono text-slate-500 truncate mt-0.5">等待捕获首帧元数据...</p>
+            </div>
+            <span id="rxPercentText" class="text-2xl font-mono font-bold text-emerald-600 shrink-0">0.0%</span>
+          </div>
+
+          <!-- 进度条（严格仅按 solvedOriginalCount / k 计算） -->
+          <div class="w-full h-3 bg-slate-100 rounded-full overflow-hidden border border-slate-200 p-0.5">
+            <div id="rxProgressBar" class="h-full bg-emerald-500 rounded-full transition-all duration-200" style="width: 0%"></div>
+          </div>
+
+          <!-- 3 项核心真实指标卡片 -->
+          <div class="grid grid-cols-3 gap-2">
+            <div class="bg-slate-50 border border-slate-200/80 rounded-xl p-2 text-center">
+              <div class="text-[11px] text-slate-500">已解出原始块</div>
+              <div id="rxDecodedCount" class="text-sm sm:text-base font-mono font-bold text-emerald-700 mt-0.5">0 / 0</div>
+              <div id="rxValidFramesSub" class="text-[10px] font-mono text-slate-400 mt-0.5">有效帧: 0</div>
+            </div>
+
+            <div class="bg-slate-50 border border-slate-200/80 rounded-xl p-2 text-center">
+              <div class="text-[11px] text-slate-500">缓存方程数</div>
+              <div id="rxCachedEqCount" class="text-sm sm:text-base font-mono font-bold text-blue-600 mt-0.5">0 组</div>
+              <div id="rxParitySub" class="text-[10px] font-mono text-slate-400 mt-0.5">预编码校验: 0/0</div>
+            </div>
+
+            <div class="bg-amber-50/80 border border-amber-200/80 rounded-xl p-2 text-center">
+              <div class="text-[11px] text-amber-800 font-medium">预计剩余 (保守)</div>
+              <div id="rxEtaText" class="text-sm sm:text-base font-mono font-bold text-amber-700 mt-0.5">计算中...</div>
+              <div id="rxFrameRateSub" class="text-[10px] font-mono text-amber-700/70 mt-0.5">速率: 0.0 帧/秒</div>
+            </div>
+          </div>
+
+          <!-- 真实原始分块恢复矩阵网格 -->
+          <div class="bg-slate-50 border border-slate-200/80 rounded-xl p-2.5">
+            <div class="flex items-center justify-between text-[11px] text-slate-500 mb-1.5">
+              <span>原始分块恢复矩阵 (<span id="matrixRangeHint">0 块</span>)</span>
+              <div class="flex items-center gap-2 text-[10px]">
+                <span class="flex items-center gap-1"><i class="w-2 h-2 rounded-xs bg-emerald-500 inline-block"></i>已真解</span>
+                <span class="flex items-center gap-1"><i class="w-2 h-2 rounded-xs bg-slate-200 inline-block"></i>未解出</span>
+              </div>
+            </div>
+            <div id="blockMatrixGrid" class="grid grid-cols-20 sm:grid-cols-25 gap-0.5 max-h-24 overflow-y-auto p-1 bg-white rounded border border-slate-200/70" style="grid-template-columns: repeat(25, minmax(0, 1fr));">
+              <div class="col-span-full text-center text-[11px] text-slate-400 py-3">捕获首帧后显示各原始数据块真实还原状态</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 还原完成后的下载与图片预览区 -->
+        <div id="rxResultCard" class="hidden rounded-xl bg-emerald-50 border border-emerald-200 p-3">
+          <div class="flex items-center justify-between gap-3">
+            <div class="min-w-0">
+              <div class="flex items-center gap-1.5 text-emerald-800 font-bold text-xs sm:text-sm">
+                <svg class="w-4 h-4 text-emerald-600 shrink-0" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7" />
+                </svg>
+                <span>文件完整还原 (CRC32 校验通过)</span>
+              </div>
+              <p id="rxResultMeta" class="text-[11px] font-mono text-emerald-700 truncate mt-0.5">file.png · 120 KB</p>
+            </div>
+            <a id="rxDownloadBtn" href="#" download="recovered_file" class="px-3.5 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-semibold text-xs shadow-sm transition-all shrink-0">
+              保存文件
+            </a>
+          </div>
+
+          <div id="rxImagePreviewWrap" class="hidden mt-2 pt-2 border-t border-emerald-200/80 flex justify-center">
+            <img id="rxImagePreview" alt="还原图片预览" class="max-h-28 sm:max-h-36 rounded-lg border border-emerald-300 object-contain bg-white" />
+          </div>
+        </div>
+
+        <!-- 未完成时的底部操作提示 -->
+        <div id="rxTipFooter" class="text-[11px] text-slate-400 bg-slate-50 px-3 py-1.5 rounded-lg border border-slate-200/70">
+          注：仅真正消元解出的原始块计入百分比；暂存的多元异或方程计入“缓存方程数”，一旦触发连锁消元进度将跃升。
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <script>
+    /**
+     * ============================================================================
+     * FountainQR 核心算法 (LT 喷泉码 + 轻量级块组校验预编码 + 严格真实进度)
+     * ============================================================================
+     */
+
+    const MAX_PAYLOAD_BYTES = 5 * 1024 * 1024; // 5MB 严格上限
+    const MAGIC_BYTES = [0x46, 0x51, 0x52, 0x32]; // "FQR2" (带预编码版本协议头)
+    const PARITY_RATIO = 0.10; // 约 10% 轻量块组异或校验块
+
+    // 三档一键场景预设
+    const PRESETS = {
+      fast: {
+        name: '高速近距离',
+        blockSize: 800,
+        fps: 8,
+        eccLevel: 'L',
+        specText: '800B/帧 · 8 FPS · ECC-L'
+      },
+      balanced: {
+        name: '均衡标准',
+        blockSize: 500,
+        fps: 6,
+        eccLevel: 'M',
+        specText: '500B/帧 · 6 FPS · ECC-M'
+      },
+      robust: {
+        name: '强抗干扰',
+        blockSize: 300,
+        fps: 4,
+        eccLevel: 'Q',
+        specText: '300B/帧 · 4 FPS · ECC-Q'
+      }
+    };
+
+    // -------------------- CRC32 查找表 --------------------
+    const CRC32_TABLE = (() => {
+      const table = new Uint32Array(256);
+      for (let i = 0; i < 256; i++) {
+        let c = i;
+        for (let k = 0; k < 8; k++) {
+          c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+        }
+        table[i] = c >>> 0;
+      }
+      return table;
+    })();
+
+    function computeCRC32(uint8Arr, length = uint8Arr.length) {
+      let crc = 0xFFFFFFFF;
+      for (let i = 0; i < length; i++) {
+        crc = CRC32_TABLE[(crc ^ uint8Arr[i]) & 0xFF] ^ (crc >>> 8);
+      }
+      return (crc ^ 0xFFFFFFFF) >>> 0;
+    }
+
+    // -------------------- Base64 与 Uint8Array 互转 --------------------
+    function uint8ToBase64(bytes) {
+      let binary = '';
+      const chunkSize = 0x8000;
+      for (let i = 0; i < bytes.length; i += chunkSize) {
+        binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunkSize));
+      }
+      return btoa(binary);
+    }
+
+    function base64ToUint8(base64) {
+      const binary = atob(base64);
+      const len = binary.length;
+      const bytes = new Uint8Array(len);
+      for (let i = 0; i < len; i++) {
+        bytes[i] = binary.charCodeAt(i);
+      }
+      return bytes;
+    }
+
+    // -------------------- Mulberry32 确定性 PRNG --------------------
+    function createPRNG(seed) {
+      let a = seed >>> 0;
+      return function () {
+        a |= 0;
+        a = (a + 0x6D2B79F5) | 0;
+        let t = Math.imul(a ^ (a >>> 15), 1 | a);
+        t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+      };
+    }
+
+    // -------------------- 轻量级块组校验预编码布局 (Group Parity Precode) --------------------
+    /**
+     * 给定原始块数 k，计算预编码校验块数量 parityCount 及每个校验块覆盖的原始块索引列表。
+     * 采用双层跨步交织分组，确保任意单块或少量冷门块都能被独立校验组覆盖反推。
+     */
+    function buildPrecodeParityGroups(k) {
+      if (k <= 2) return [];
+      const parityCount = Math.max(1, Math.ceil(k * PARITY_RATIO));
+      const groups = [];
+      const groupSize = Math.max(2, Math.min(12, Math.ceil(k / parityCount)));
+
+      for (let p = 0; p < parityCount; p++) {
+        const members = [];
+        // 交织步长抽取，避免相邻块同时丢失导致整组失效
+        const stride = parityCount;
+        for (let idx = p; idx < k; idx += stride) {
+          members.push(idx);
+          if (members.length >= groupSize) break;
+        }
+        // 若不足 2 个成员，补充确定性伪随机成员
+        if (members.length < 2) {
+          const rng = createPRNG((0x51A70000 + p) >>> 0);
+          while (members.length < Math.min(k, 3)) {
+            const candidate = Math.floor(rng() * k);
+            if (!members.includes(candidate)) members.push(candidate);
+          }
+        }
+        groups.push(members);
+      }
+      return groups;
+    }
+
+    // -------------------- 鲁棒孤子分布 (Robust Soliton Distribution) --------------------
+    const solitonCdfCache = new Map();
+
+    function getRobustSolitonCDF(totalSymbols) {
+      if (solitonCdfCache.has(totalSymbols)) return solitonCdfCache.get(totalSymbols);
+      if (totalSymbols <= 1) {
+        const single = new Float64Array([0, 1]);
+        solitonCdfCache.set(totalSymbols, single);
+        return single;
+      }
+
+      const c = 0.08;
+      const delta = 0.05;
+      const R = c * Math.log(totalSymbols / delta) * Math.sqrt(totalSymbols);
+      const spike = Math.max(1, Math.min(totalSymbols, Math.round(totalSymbols / R)));
+
+      const rho = new Float64Array(totalSymbols + 1);
+      const tau = new Float64Array(totalSymbols + 1);
+
+      rho[1] = 1.0 / totalSymbols;
+      for (let d = 2; d <= totalSymbols; d++) {
+        rho[d] = 1.0 / (d * (d - 1));
+      }
+
+      for (let d = 1; d <= totalSymbols; d++) {
+        if (d < spike) {
+          tau[d] = R / (d * totalSymbols);
+        } else if (d === spike) {
+          tau[d] = (R * Math.log(R / delta)) / totalSymbols;
+        } else {
+          tau[d] = 0;
+        }
+      }
+
+      let Z = 0;
+      for (let d = 1; d <= totalSymbols; d++) Z += rho[d] + tau[d];
+
+      const cdf = new Float64Array(totalSymbols + 1);
+      let acc = 0;
+      for (let d = 1; d <= totalSymbols; d++) {
+        acc += (rho[d] + tau[d]) / Z;
+        cdf[d] = acc;
+      }
+      cdf[totalSymbols] = 1.0;
+
+      solitonCdfCache.set(totalSymbols, cdf);
+      return cdf;
+    }
+
+    /**
+     * 在 L = k + parityCount 个中间符号中按 seed 确定性抽样
+     */
+    function sampleFrameIndices(totalSymbols, seed) {
+      const rng = createPRNG(seed);
+      const cdf = getRobustSolitonCDF(totalSymbols);
+      const u = rng();
+
+      let lo = 1, hi = totalSymbols, d = 1;
+      while (lo <= hi) {
+        const mid = (lo + hi) >>> 1;
+        if (cdf[mid] >= u) {
+          d = mid;
+          hi = mid - 1;
+        } else {
+          lo = mid + 1;
+        }
+      }
+
+      const indices = new Uint32Array(d);
+      if (d <= totalSymbols * 0.25) {
+        const chosen = new Set();
+        let count = 0;
+        while (count < d) {
+          const idx = Math.floor(rng() * totalSymbols);
+          if (!chosen.has(idx)) {
+            chosen.add(idx);
+            indices[count++] = idx;
+          }
+        }
+      } else {
+        const pool = new Uint32Array(totalSymbols);
+        for (let i = 0; i < totalSymbols; i++) pool[i] = i;
+        for (let i = 0; i < d; i++) {
+          const j = i + Math.floor(rng() * (totalSymbols - i));
+          const tmp = pool[i];
+          pool[i] = pool[j];
+          pool[j] = tmp;
+          indices[i] = pool[i];
+        }
+      }
+
+      return { degree: d, indices };
+    }
+
+    // -------------------- 格式化与提示工具 --------------------
+    function showToast(message, type = 'info') {
+      const container = document.getElementById('toastContainer');
+      const el = document.createElement('div');
+      const styles = {
+        info: 'bg-slate-900 text-white border-slate-700',
+        success: 'bg-emerald-600 text-white border-emerald-500',
+        error: 'bg-rose-600 text-white border-rose-500',
+        warning: 'bg-amber-600 text-white border-amber-500',
+      };
+      el.className = `pointer-events-auto border rounded-lg px-3.5 py-2.5 text-xs font-medium shadow-lg transition-all duration-200 ${styles[type] || styles.info}`;
+      el.textContent = message;
+      container.appendChild(el);
+      setTimeout(() => {
+        el.style.opacity = '0';
+        setTimeout(() => el.remove(), 220);
+      }, 3200);
+    }
+
+    function formatBytes(bytes) {
+      if (bytes === 0) return '0 B';
+      const units = ['B', 'KB', 'MB'];
+      const i = Math.min(2, Math.floor(Math.log(bytes) / Math.log(1024)));
+      return `${(bytes / Math.pow(1024, i)).toFixed(i === 0 ? 0 : 2)} ${units[i]}`;
+    }
+
+    function formatDuration(seconds) {
+      if (!isFinite(seconds) || seconds < 0) return '--';
+      if (seconds < 1) return '< 1 秒';
+      const s = Math.round(seconds);
+      if (s < 60) return `${s} 秒`;
+      const m = Math.floor(s / 60);
+      const remS = s % 60;
+      return remS > 0 ? `${m} 分 ${remS} 秒` : `${m} 分钟`;
+    }
+
+    // ============================================================================
+    // 发送端逻辑 (Sender · LT + 块组预编码)
+    // ============================================================================
+    const senderState = {
+      presetKey: 'fast',
+      blockSize: PRESETS.fast.blockSize,
+      fps: PRESETS.fast.fps,
+      eccLevel: PRESETS.fast.eccLevel,
+      payloadBytes: null,
+      payloadName: '',
+      isZip: false,
+      fileCRC32: 0,
+      intermediateSymbols: [], // 前 k 个为原始数据块，后 parityCount 个为预编码校验块
+      k: 0,
+      parityCount: 0,
+      isPlaying: false,
+      timerId: null,
+      playStartTime: null,
+      framesSent: 0,
+      seedCounter: (Math.floor(Math.random() * 0x7FFFFFFF) + 1) >>> 0,
+      simTimerId: null,
+    };
+
+    function switchMode(mode) {
+      const senderView = document.getElementById('senderView');
+      const receiverView = document.getElementById('receiverView');
+      const tabSender = document.getElementById('tabSender');
+      const tabReceiver = document.getElementById('tabReceiver');
+
+      if (mode === 'sender') {
+        senderView.classList.remove('hidden');
+        senderView.classList.add('grid');
+        receiverView.classList.add('hidden');
+        receiverView.classList.remove('grid');
+
+        tabSender.className = 'flex items-center gap-1.5 px-3 py-1 rounded-md text-xs sm:text-sm font-semibold transition-all bg-white text-blue-600 shadow-sm cursor-pointer';
+        tabReceiver.className = 'flex items-center gap-1.5 px-3 py-1 rounded-md text-xs sm:text-sm font-medium transition-all text-slate-600 hover:text-slate-900 cursor-pointer';
+      } else {
+        if (senderState.isPlaying) stopPlayback();
+        senderView.classList.add('hidden');
+        senderView.classList.remove('grid');
+        receiverView.classList.remove('hidden');
+        receiverView.classList.add('grid');
+
+        tabReceiver.className = 'flex items-center gap-1.5 px-3 py-1 rounded-md text-xs sm:text-sm font-semibold transition-all bg-white text-blue-600 shadow-sm cursor-pointer';
+        tabSender.className = 'flex items-center gap-1.5 px-3 py-1 rounded-md text-xs sm:text-sm font-medium transition-all text-slate-600 hover:text-slate-900 cursor-pointer';
+      }
+    }
+
+    function applyPreset(key) {
+      const preset = PRESETS[key];
+      if (!preset) return;
+
+      senderState.presetKey = key;
+      senderState.blockSize = preset.blockSize;
+      senderState.fps = preset.fps;
+      senderState.eccLevel = preset.eccLevel;
+
+      document.getElementById('presetSpecBadge').textContent = preset.specText;
+
+      Object.keys(PRESETS).forEach(k => {
+        const btn = document.getElementById(`presetBtn-${k}`);
+        if (k === key) {
+          btn.className = 'preset-btn p-2.5 rounded-xl border-2 border-blue-600 bg-blue-50/70 text-left transition-all cursor-pointer';
+        } else {
+          btn.className = 'preset-btn p-2.5 rounded-xl border border-slate-200 bg-white hover:border-slate-300 text-left transition-all cursor-pointer';
+        }
+      });
+
+      if (senderState.payloadBytes) {
+        const wasPlaying = senderState.isPlaying;
+        if (wasPlaying) stopPlayback();
+        buildIntermediateSymbols();
+        updateSenderTimeEstimate();
+        renderNextFrame();
+        if (wasPlaying) startPlayback();
+      }
+    }
+
+    function updateSenderTimeEstimate() {
+      const mainEl = document.getElementById('estTimeMain');
+      const detailEl = document.getElementById('estTimeDetail');
+      const blocksEl = document.getElementById('estBlocksSummary');
+
+      if (!senderState.payloadBytes || senderState.k === 0) {
+        blocksEl.textContent = '尚未加载文件';
+        mainEl.textContent = '-- 秒 ~ -- 秒';
+        detailEl.textContent = '已集成约 10% 块组校验预编码，可有效缓解最后几块的长尾等待。';
+        return;
+      }
+
+      const k = senderState.k;
+      const pCount = senderState.parityCount;
+      const fps = senderState.fps;
+      // 加入块组预编码后，有效帧冗余开销降至约 1.08 * k
+      const minEffectiveFrames = Math.ceil(k * 1.08);
+      const idealSec = minEffectiveFrames / fps;
+      const realisticSec = (minEffectiveFrames / 0.75) / fps;
+
+      blocksEl.textContent = `${k} 原始块 + ${pCount} 校验块`;
+      mainEl.textContent = `预计 ${formatDuration(idealSec)} ~ ${formatDuration(realisticSec)}`;
+
+      if (realisticSec > 180) {
+        detailEl.textContent = `文件较大（${formatBytes(senderState.payloadBytes.length)}），预计超过 3 分钟，建议压缩图片或固定手机支架扫码。`;
+      } else {
+        detailEl.textContent = `按「${PRESETS[senderState.presetKey].name}」(${fps} FPS) 播放，无丢包约 ${formatDuration(idealSec)}，日常手持约 ${formatDuration(realisticSec)}。`;
+      }
+    }
+
+    // 拖拽与选择文件监听
+    const dropZone = document.getElementById('dropZone');
+    const fileInput = document.getElementById('fileInput');
+
+    ['dragenter', 'dragover'].forEach(evt => {
+      dropZone.addEventListener(evt, e => {
+        e.preventDefault();
+        dropZone.classList.add('border-blue-500', 'bg-blue-50/70');
+      });
+    });
+
+    ['dragleave', 'drop'].forEach(evt => {
+      dropZone.addEventListener(evt, e => {
+        e.preventDefault();
+        dropZone.classList.remove('border-blue-500', 'bg-blue-50/70');
+      });
+    });
+
+    dropZone.addEventListener('drop', e => {
+      if (e.dataTransfer?.files?.length) handleSelectedFiles(e.dataTransfer.files);
+    });
+
+    fileInput.addEventListener('change', e => {
+      if (e.target.files?.length) handleSelectedFiles(e.target.files);
+    });
+
+    async function handleSelectedFiles(fileList) {
+      const files = Array.from(fileList);
+      if (!files.length) return;
+
+      const sizeErrorBanner = document.getElementById('sizeErrorBanner');
+      const sizeErrorText = document.getElementById('sizeErrorText');
+      sizeErrorBanner.classList.add('hidden');
+
+      const rawTotalSize = files.reduce((acc, f) => acc + f.size, 0);
+      if (rawTotalSize === 0) {
+        showToast('所选文件为空（0 字节），请重新选择。', 'warning');
+        return;
+      }
+      if (rawTotalSize > MAX_PAYLOAD_BYTES) {
+        sizeErrorText.textContent = `文件总大小 ${formatBytes(rawTotalSize)} 超出 5.00 MB 上限，已阻止加载。`;
+        sizeErrorBanner.classList.remove('hidden');
+        showToast('文件超出 5MB 上限，已阻止加载', 'error');
+        fileInput.value = '';
+        return;
+      }
+
+      stopPlayback();
+
+      try {
+        let finalBytes, finalName, isZip = false;
+
+        if (files.length === 1) {
+          finalBytes = new Uint8Array(await files[0].arrayBuffer());
+          finalName = files[0].name;
+          isZip = finalName.toLowerCase().endsWith('.zip');
+        } else {
+          showToast(`正在将 ${files.length} 个文件打包为 ZIP...`, 'info');
+          const zip = new JSZip();
+          for (const f of files) {
+            zip.file(f.name, await f.arrayBuffer());
+          }
+          finalBytes = await zip.generateAsync({
+            type: 'uint8array',
+            compression: 'DEFLATE',
+            compressionOptions: { level: 6 }
+          });
+          if (finalBytes.length > MAX_PAYLOAD_BYTES) {
+            sizeErrorText.textContent = `打包后大小为 ${formatBytes(finalBytes.length)}，仍超出 5MB 上限。`;
+            sizeErrorBanner.classList.remove('hidden');
+            fileInput.value = '';
+            return;
+          }
+          const stamp = new Date().toISOString().slice(11, 19).replace(/:/g, '');
+          finalName = `files_${stamp}.zip`;
+          isZip = true;
+        }
+
+        senderState.payloadBytes = finalBytes;
+        senderState.payloadName = finalName;
+        senderState.isZip = isZip;
+        senderState.fileCRC32 = computeCRC32(finalBytes);
+        senderState.framesSent = 0;
+
+        document.getElementById('fileSizeBadge').textContent = `${formatBytes(finalBytes.length)} / 5 MB`;
+        document.getElementById('fileSizeBadge').className = 'text-[11px] font-mono px-2 py-0.5 rounded bg-blue-50 text-blue-700 border border-blue-200 font-semibold';
+
+        dropZone.classList.add('hidden');
+        document.getElementById('loadedFileCard').classList.remove('hidden');
+        document.getElementById('loadedPayloadName').textContent = finalName;
+        document.getElementById('loadedPayloadMeta').textContent = `载荷: ${formatBytes(finalBytes.length)} · CRC32: ${senderState.fileCRC32.toString(16).toUpperCase().padStart(8, '0')}`;
+
+        const multiSummary = document.getElementById('multiFileSummary');
+        if (files.length > 1) {
+          multiSummary.classList.remove('hidden');
+          multiSummary.textContent = `内含 ${files.length} 个文件: ${files.map(f => f.name).join(', ')}`;
+        } else {
+          multiSummary.classList.add('hidden');
+        }
+
+        buildIntermediateSymbols();
+        updateSenderTimeEstimate();
+
+        document.getElementById('btnTogglePlay').disabled = false;
+        document.getElementById('btnSelfLoopSim').disabled = false;
+
+        renderNextFrame();
+        showToast(`就绪：${senderState.k} 原始块 + ${senderState.parityCount} 预编码校验块`, 'success');
+      } catch (err) {
+        console.error(err);
+        showToast('读取文件失败: ' + err.message, 'error');
+      }
+    }
+
+    function clearSenderPayload() {
+      stopPlayback();
+      senderState.payloadBytes = null;
+      senderState.intermediateSymbols = [];
+      senderState.k = 0;
+      senderState.parityCount = 0;
+      senderState.framesSent = 0;
+
+      fileInput.value = '';
+      dropZone.classList.remove('hidden');
+      document.getElementById('loadedFileCard').classList.add('hidden');
+      document.getElementById('sizeErrorBanner').classList.add('hidden');
+      document.getElementById('fileSizeBadge').textContent = '上限 5.00 MB';
+      document.getElementById('fileSizeBadge').className = 'text-[11px] font-mono px-2 py-0.5 rounded bg-slate-100 text-slate-500';
+
+      document.getElementById('statFramesSent').textContent = '0';
+      document.getElementById('statCurrentDegree').textContent = '-';
+      document.getElementById('txStatusDot').className = 'w-2.5 h-2.5 rounded-full bg-slate-300 shrink-0';
+      document.getElementById('txStatusText').textContent = '等待选择文件...';
+      document.getElementById('txElapsedText').textContent = '已播放: 0.0s';
+
+      document.getElementById('btnTogglePlay').disabled = true;
+      document.getElementById('btnSelfLoopSim').disabled = true;
+
+      updateSenderTimeEstimate();
+      drawIdleQrPlaceholder();
+    }
+
+    /**
+     * 切分原始块并计算约 10% 块组异或预编码校验块，构成 L = k + parityCount 中间符号池
+     */
+    function buildIntermediateSymbols() {
+      if (!senderState.payloadBytes) return;
+      const bytes = senderState.payloadBytes;
+      const bs = senderState.blockSize;
+      const k = Math.max(1, Math.ceil(bytes.length / bs));
+
+      const rawBlocks = new Array(k);
+      for (let i = 0; i < k; i++) {
+        const block = new Uint8Array(bs);
+        const start = i * bs;
+        const end = Math.min(start + bs, bytes.length);
+        block.set(bytes.subarray(start, end), 0);
+        rawBlocks[i] = block;
+      }
+
+      const parityGroups = buildPrecodeParityGroups(k);
+      const parityBlocks = parityGroups.map(members => {
+        const pBlock = new Uint8Array(bs);
+        for (const mIdx of members) {
+          const src = rawBlocks[mIdx];
+          for (let b = 0; b < bs; b++) {
+            pBlock[b] ^= src[b];
+          }
+        }
+        return pBlock;
+      });
+
+      senderState.k = k;
+      senderState.parityCount = parityBlocks.length;
+      senderState.intermediateSymbols = rawBlocks.concat(parityBlocks);
+    }
+
+    function encodeFountainFrame(seed) {
+      const totalSymbols = senderState.intermediateSymbols.length;
+      const bs = senderState.blockSize;
+      const { degree, indices } = sampleFrameIndices(totalSymbols, seed);
+
+      const xorBlock = new Uint8Array(bs);
+      for (let i = 0; i < degree; i++) {
+        const src = senderState.intermediateSymbols[indices[i]];
+        for (let b = 0; b < bs; b++) {
+          xorBlock[b] ^= src[b];
+        }
+      }
+
+      const nameBytes = new TextEncoder().encode(senderState.payloadName);
+      const headerLen = 28 + nameBytes.length;
+      const totalFrameLen = headerLen + bs + 4;
+
+      const frame = new Uint8Array(totalFrameLen);
+      const view = new DataView(frame.buffer);
+
+      frame[0] = MAGIC_BYTES[0];
+      frame[1] = MAGIC_BYTES[1];
+      frame[2] = MAGIC_BYTES[2];
+      frame[3] = MAGIC_BYTES[3];
+
+      view.setUint16(4, senderState.isZip ? 1 : 0, false);
+      view.setUint32(6, senderState.payloadBytes.length, false);
+      view.setUint16(10, bs, false);
+      view.setUint32(12, senderState.k, false);
+      view.setUint16(16, senderState.parityCount, false);
+      view.setUint32(18, senderState.fileCRC32, false);
+      view.setUint32(22, seed >>> 0, false);
+      view.setUint16(26, nameBytes.length, false);
+
+      frame.set(nameBytes, 28);
+      frame.set(xorBlock, headerLen);
+
+      const frameCRC = computeCRC32(frame, totalFrameLen - 4);
+      view.setUint32(totalFrameLen - 4, frameCRC, false);
+
+      return { frame, degree, seed };
+    }
+
+    function renderNextFrame() {
+      if (!senderState.payloadBytes || senderState.k === 0) return;
+
+      senderState.seedCounter = (senderState.seedCounter + 0x9E3779B9) >>> 0;
+      if (senderState.seedCounter === 0) senderState.seedCounter = 1;
+
+      const { frame, degree, seed } = encodeFountainFrame(senderState.seedCounter);
+      const base64Payload = uint8ToBase64(frame);
+
+      try {
+        const qr = qrcode(0, senderState.eccLevel);
+        qr.addData(base64Payload, 'Byte');
+        qr.make();
+
+        const moduleCount = qr.getModuleCount();
+        const canvas = document.getElementById('qrCanvas');
+        const ctx = canvas.getContext('2d');
+
+        const cellSize = Math.max(3, Math.floor(420 / moduleCount));
+        const actualPx = moduleCount * cellSize;
+        canvas.width = actualPx;
+        canvas.height = actualPx;
+
+        ctx.fillStyle = '#FFFFFF';
+        ctx.fillRect(0, 0, actualPx, actualPx);
+        ctx.fillStyle = '#000000';
+
+        for (let r = 0; r < moduleCount; r++) {
+          for (let c = 0; c < moduleCount; c++) {
+            if (qr.isDark(r, c)) {
+              ctx.fillRect(c * cellSize, r * cellSize, cellSize, cellSize);
+            }
+          }
+        }
+
+        senderState.framesSent++;
+        document.getElementById('statFramesSent').textContent = senderState.framesSent.toString();
+        document.getElementById('statCurrentDegree').textContent = degree.toString();
+        document.getElementById('currentSeedDisplay').textContent = `0x${seed.toString(16).toUpperCase().padStart(8, '0')}`;
+
+        const ver = Math.round((moduleCount - 17) / 4);
+        document.getElementById('qrVersionDisplay').textContent = `QR-V${ver} · +${senderState.parityCount}P`;
+
+        if (senderState.isPlaying && senderState.playStartTime) {
+          const elapsed = (performance.now() - senderState.playStartTime) / 1000;
+          document.getElementById('txElapsedText').textContent = `已播放: ${elapsed.toFixed(1)}s`;
+        } else {
+          document.getElementById('txStatusDot').className = 'w-2.5 h-2.5 rounded-full bg-amber-400 shrink-0';
+          document.getElementById('txStatusText').textContent = '已就绪 · 点击「开始喷射二维码」循环播放';
+        }
+      } catch (err) {
+        console.error('QR 容量溢出:', err);
+        stopPlayback();
+        showToast('单帧字节过长，自动切换至「均衡标准」模式重试', 'warning');
+        applyPreset('balanced');
+      }
+    }
+
+    function togglePlay() {
+      if (senderState.isPlaying) stopPlayback();
+      else startPlayback();
+    }
+
+    function startPlayback() {
+      if (!senderState.payloadBytes) return;
+      senderState.isPlaying = true;
+      senderState.playStartTime = performance.now();
+
+      document.getElementById('iconPlay').classList.add('hidden');
+      document.getElementById('iconPause').classList.remove('hidden');
+      document.getElementById('btnPlayText').textContent = '暂停喷射';
+      document.getElementById('txStatusDot').className = 'w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse shrink-0';
+      document.getElementById('txStatusText').textContent = `正在循环播放 (${PRESETS[senderState.presetKey].name} · ${senderState.fps} FPS)...`;
+
+      const intervalMs = Math.max(50, Math.round(1000 / senderState.fps));
+      senderState.timerId = setInterval(renderNextFrame, intervalMs);
+    }
+
+    function stopPlayback() {
+      senderState.isPlaying = false;
+      if (senderState.timerId) {
+        clearInterval(senderState.timerId);
+        senderState.timerId = null;
+      }
+      document.getElementById('iconPlay').classList.remove('hidden');
+      document.getElementById('iconPause').classList.add('hidden');
+      document.getElementById('btnPlayText').textContent = '开始喷射二维码';
+      if (senderState.payloadBytes) {
+        document.getElementById('txStatusDot').className = 'w-2.5 h-2.5 rounded-full bg-amber-400 shrink-0';
+        document.getElementById('txStatusText').textContent = '已暂停播放';
+      }
+    }
+
+    function drawIdleQrPlaceholder() {
+      const canvas = document.getElementById('qrCanvas');
+      const ctx = canvas.getContext('2d');
+      canvas.width = 360;
+      canvas.height = 360;
+
+      ctx.fillStyle = '#FFFFFF';
+      ctx.fillRect(0, 0, 360, 360);
+
+      ctx.strokeStyle = '#E2E8F0';
+      ctx.lineWidth = 4;
+      ctx.strokeRect(20, 20, 320, 320);
+
+      ctx.fillStyle = '#64748B';
+      ctx.font = '600 15px Inter, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText('请在左侧选择 ≤5MB 文件', 180, 174);
+      ctx.font = '12px JetBrains Mono, monospace';
+      ctx.fillStyle = '#94A3B8';
+      ctx.fillText('LT + Precode QR Ready', 180, 198);
+    }
+
+    // ============================================================================
+    // 接收端 BP 剥洋葱译码器（联合消元：LT方程 + 预编码块组校验方程）
+    // 严格真实进度：仅按 solvedOriginalCount / k 计算
+    // ============================================================================
+    const rxState = {
+      isScanning: false,
+      stream: null,
+      rafId: null,
+      barcodeDetector: null,
+      seenSeeds: new Set(),
+      validFramesCount: 0,
+      validFrameTimestamps: [], // 滑动窗口时间戳用于平滑速率计算
+      startTime: null,
+      metaLocked: false,
+      fileName: '',
+      isZip: false,
+      totalOriginalBytes: 0,
+      blockSize: 0,
+      k: 0,
+      parityCount: 0,
+      totalSymbols: 0,
+      solvedSymbols: [],       // 长度 L = k + parityCount，前 k 个为原始块
+      solvedOriginalCount: 0,  // 严格真实已解原始块数量
+      solvedParityCount: 0,    // 已解校验块数量
+      equations: [],           // 混合线性方程池（包含 LT 帧方程 + 预编码零和校验方程）
+      symbolToEqs: [],         // 每个符号索引关联的活跃方程集合
+      completed: false,
+      objectUrl: null,
+      scanFramesInWindow: 0,
+      lastFpsUpdate: performance.now(),
+      matrixCells: [],         // 缓存 DOM 网格节点以实现零卡顿高频刷新
+    };
+
+    (async function initBarcodeDetector() {
+      if ('BarcodeDetector' in window) {
+        try {
+          const formats = await window.BarcodeDetector.getSupportedFormats();
+          if (formats.includes('qr_code')) {
+            rxState.barcodeDetector = new window.BarcodeDetector({ formats: ['qr_code'] });
+          }
+        } catch (e) {}
+      }
+    })();
+
+    function resetReceiverState(silent = false) {
+      rxState.seenSeeds.clear();
+      rxState.validFramesCount = 0;
+      rxState.validFrameTimestamps = [];
+      rxState.startTime = null;
+      rxState.metaLocked = false;
+      rxState.fileName = '';
+      rxState.isZip = false;
+      rxState.totalOriginalBytes = 0;
+      rxState.blockSize = 0;
+      rxState.k = 0;
+      rxState.parityCount = 0;
+      rxState.totalSymbols = 0;
+      rxState.solvedSymbols = [];
+      rxState.solvedOriginalCount = 0;
+      rxState.solvedParityCount = 0;
+      rxState.equations = [];
+      rxState.symbolToEqs = [];
+      rxState.completed = false;
+      rxState.matrixCells = [];
+
+      if (rxState.objectUrl) {
+        URL.revokeObjectURL(rxState.objectUrl);
+        rxState.objectUrl = null;
+      }
+
+      document.getElementById('rxPayloadInfo').textContent = '等待捕获首帧元数据...';
+      document.getElementById('rxPercentText').textContent = '0.0%';
+      document.getElementById('rxProgressBar').style.width = '0%';
+      document.getElementById('rxDecodedCount').textContent = '0 / 0';
+      document.getElementById('rxValidFramesSub').textContent = '有效帧: 0';
+      document.getElementById('rxCachedEqCount').textContent = '0 组';
+      document.getElementById('rxParitySub').textContent = '预编码校验: 0/0';
+      document.getElementById('rxEtaText').textContent = '计算中...';
+      document.getElementById('rxFrameRateSub').textContent = '速率: 0.0 帧/秒';
+      document.getElementById('matrixRangeHint').textContent = '0 块';
+      document.getElementById('blockMatrixGrid').innerHTML = '<div class="col-span-full text-center text-[11px] text-slate-400 py-3">捕获首帧后显示各原始数据块真实还原状态</div>';
+
+      document.getElementById('rxResultCard').classList.add('hidden');
+      document.getElementById('rxImagePreviewWrap').classList.add('hidden');
+      document.getElementById('rxTipFooter').classList.remove('hidden');
+
+      if (!silent) showToast('接收端译码器已重置', 'info');
+    }
+
+    /**
+     * 初始化接收端元数据与预编码校验方程约束
+     */
+    function initReceiverMetadata(fileName, isZip, totalOriginalBytes, blockSize, k, parityCount, fileCRC32) {
+      const totalSymbols = k + parityCount;
+      rxState.metaLocked = true;
+      rxState.fileName = fileName;
+      rxState.isZip = isZip;
+      rxState.totalOriginalBytes = totalOriginalBytes;
+      rxState.blockSize = blockSize;
+      rxState.k = k;
+      rxState.parityCount = parityCount;
+      rxState.totalSymbols = totalSymbols;
+      rxState.fileCRC32 = fileCRC32;
+      rxState.solvedSymbols = new Array(totalSymbols).fill(null);
+      rxState.symbolToEqs = Array.from({ length: totalSymbols }, () => new Set());
+      rxState.startTime = performance.now();
+
+      // 注入预编码固有校验约束：P_p ^ S_{m1} ^ S_{m2} ... = 0
+      const parityGroups = buildPrecodeParityGroups(k);
+      parityGroups.forEach((members, pIdx) => {
+        const eqIndices = new Set(members);
+        eqIndices.add(k + pIdx); // 校验块自身在中间符号池中的索引为 k + pIdx
+        const eq = {
+          indices: eqIndices,
+          data: new Uint8Array(blockSize), // 零向量
+          isPrecode: true
+        };
+        rxState.equations.push(eq);
+        for (const symIdx of eqIndices) {
+          rxState.symbolToEqs[symIdx].add(eq);
+        }
+      });
+
+      document.getElementById('rxPayloadInfo').textContent = `${fileName} · ${formatBytes(totalOriginalBytes)} (${k} 原始块 + ${parityCount} 预编码块)`;
+      document.getElementById('matrixRangeHint').textContent = `${k} 原始块`;
+      initBlockMatrixDOM(k);
+    }
+
+    /**
+     * 构建原始块恢复矩阵网格（最多渲染 500 个格子，超出时按比例映射但严格仅代表已解原始块）
+     */
+    function initBlockMatrixDOM(k) {
+      const grid = document.getElementById('blockMatrixGrid');
+      const displayCount = Math.min(k, 500);
+      grid.innerHTML = '';
+      rxState.matrixCells = new Array(displayCount);
+
+      const frag = document.createDocumentFragment();
+      for (let i = 0; i < displayCount; i++) {
+        const cell = document.createElement('div');
+        cell.className = 'h-2 rounded-[2px] bg-slate-200 transition-colors duration-150';
+        rxState.matrixCells[i] = cell;
+        frag.appendChild(cell);
+      }
+      grid.appendChild(frag);
+    }
+
+    function ingestEncodedFrameBytes(frameBytes) {
+      if (rxState.completed) return false;
+      if (!frameBytes || frameBytes.length < 32) return false;
+
+      if (
+        frameBytes[0] !== MAGIC_BYTES[0] ||
+        frameBytes[1] !== MAGIC_BYTES[1] ||
+        frameBytes[2] !== MAGIC_BYTES[2] ||
+        frameBytes[3] !== MAGIC_BYTES[3]
+      ) {
+        return false;
+      }
+
+      const view = new DataView(frameBytes.buffer, frameBytes.byteOffset, frameBytes.byteLength);
+      const expectedCRC = view.getUint32(frameBytes.length - 4, false);
+      const actualCRC = computeCRC32(frameBytes, frameBytes.length - 4);
+      if (expectedCRC !== actualCRC) return false;
+
+      const flags = view.getUint16(4, false);
+      const isZip = (flags & 1) === 1;
+      const totalOriginalBytes = view.getUint32(6, false);
+      const blockSize = view.getUint16(10, false);
+      const k = view.getUint32(12, false);
+      const parityCount = view.getUint16(16, false);
+      const fileCRC32 = view.getUint32(18, false);
+      const seed = view.getUint32(22, false);
+      const nameLen = view.getUint16(26, false);
+
+      const headerLen = 28 + nameLen;
+      if (frameBytes.length !== headerLen + blockSize + 4) return false;
+      if (totalOriginalBytes > MAX_PAYLOAD_BYTES || k === 0 || blockSize === 0) return false;
+
+      const fileName = new TextDecoder().decode(frameBytes.subarray(28, headerLen));
+      const encodedBlock = new Uint8Array(blockSize);
+      encodedBlock.set(frameBytes.subarray(headerLen, headerLen + blockSize));
+
+      if (!rxState.metaLocked) {
+        initReceiverMetadata(fileName, isZip, totalOriginalBytes, blockSize, k, parityCount, fileCRC32);
+      } else if (
+        rxState.fileCRC32 !== fileCRC32 ||
+        rxState.k !== k ||
+        rxState.parityCount !== parityCount ||
+        rxState.blockSize !== blockSize
+      ) {
+        resetReceiverState(true);
+        return ingestEncodedFrameBytes(frameBytes);
+      }
+
+      if (rxState.seenSeeds.has(seed)) return false;
+      rxState.seenSeeds.add(seed);
+      rxState.validFramesCount++;
+
+      const now = performance.now();
+      rxState.validFrameTimestamps.push(now);
+      if (rxState.validFrameTimestamps.length > 30) {
+        rxState.validFrameTimestamps.shift();
+      }
+
+      // 采样得到中间符号索引（0 .. k+parityCount-1）
+      const { indices } = sampleFrameIndices(rxState.totalSymbols, seed);
+      const activeIndices = new Set();
+
+      for (let i = 0; i < indices.length; i++) {
+        const symIdx = indices[i];
+        if (rxState.solvedSymbols[symIdx] !== null) {
+          const known = rxState.solvedSymbols[symIdx];
+          for (let b = 0; b < blockSize; b++) {
+            encodedBlock[b] ^= known[b];
+          }
+        } else {
+          activeIndices.add(symIdx);
+        }
+      }
+
+      if (activeIndices.size === 0) {
+        updateReceiverStatsUI();
+        return true;
+      }
+
+      const eq = { indices: activeIndices, data: encodedBlock, isPrecode: false };
+      rxState.equations.push(eq);
+      for (const symIdx of activeIndices) {
+        rxState.symbolToEqs[symIdx].add(eq);
+      }
+
+      // 执行 BP 剥洋葱级联消元（同时联动 LT 方程与预编码校验组）
+      runBeliefPropagation(eq);
+      updateReceiverStatsUI();
+
+      // 只要全部 k 个原始块均已真解，立即完成还原（无需等待多余校验块）
+      if (rxState.solvedOriginalCount === rxState.k && !rxState.completed) {
+        finalizeRecoveredFile();
+      }
+
+      return true;
+    }
+
+    function runBeliefPropagation(initialEq) {
+      const queue = [];
+      if (initialEq.indices.size === 1) queue.push(initialEq);
+      const bs = rxState.blockSize;
+
+      while (queue.length > 0) {
+        const eq = queue.shift();
+        if (eq.indices.size !== 1) continue;
+
+        const solvedIdx = eq.indices.values().next().value;
+        eq.indices.delete(solvedIdx);
+        rxState.symbolToEqs[solvedIdx].delete(eq);
+
+        if (rxState.solvedSymbols[solvedIdx] !== null) continue;
+
+        rxState.solvedSymbols[solvedIdx] = eq.data;
+        if (solvedIdx < rxState.k) {
+          rxState.solvedOriginalCount++;
+        } else {
+          rxState.solvedParityCount++;
+        }
+
+        const dependents = Array.from(rxState.symbolToEqs[solvedIdx]);
+        for (const depEq of dependents) {
+          depEq.indices.delete(solvedIdx);
+          rxState.symbolToEqs[solvedIdx].delete(depEq);
+
+          for (let b = 0; b < bs; b++) {
+            depEq.data[b] ^= eq.data[b];
+          }
+
+          if (depEq.indices.size === 1) {
+            queue.push(depEq);
+          }
+        }
+      }
+
+      // 清理已消元完毕的空方程
+      rxState.equations = rxState.equations.filter(e => e.indices.size > 0);
+    }
+
+    /**
+     * 严格真实进度与滑动窗口保守 ETA 更新
+     */
+    function updateReceiverStatsUI() {
+      const k = rxState.k || 1;
+      // 严格仅按“已真解原始块数 / k”计算百分比
+      const realPct = rxState.k ? (rxState.solvedOriginalCount / rxState.k) * 100 : 0;
+
+      document.getElementById('rxPercentText').textContent = `${realPct.toFixed(1)}%`;
+      document.getElementById('rxProgressBar').style.width = `${realPct}%`;
+      document.getElementById('rxDecodedCount').textContent = `${rxState.solvedOriginalCount} / ${rxState.k}`;
+      document.getElementById('rxValidFramesSub').textContent = `有效帧: ${rxState.validFramesCount}`;
+
+      // 单独统计未解开的 LT 缓存方程数（不含初始预编码校验方程）
+      const cachedLtEquations = rxState.equations.filter(e => !e.isPrecode).length;
+      document.getElementById('rxCachedEqCount').textContent = `${cachedLtEquations} 组`;
+      document.getElementById('rxParitySub').textContent = `预编码校验: ${rxState.solvedParityCount}/${rxState.parityCount}`;
+
+      // 滑动窗口平滑计算有效收帧速率与保守 ETA
+      if (rxState.startTime && rxState.validFramesCount > 0) {
+        const now = performance.now();
+        let frameRate = 0;
+
+        if (rxState.validFrameTimestamps.length >= 2) {
+          const oldest = rxState.validFrameTimestamps[0];
+          const spanSec = Math.max(0.25, (now - oldest) / 1000);
+          frameRate = (rxState.validFrameTimestamps.length - 1) / spanSec;
+        } else {
+          const totalElapsed = Math.max(0.3, (now - rxState.startTime) / 1000);
+          frameRate = rxState.validFramesCount / totalElapsed;
+        }
+
+        document.getElementById('rxFrameRateSub').textContent = `速率: ${frameRate.toFixed(1)} 帧/秒`;
+
+        if (rxState.completed) {
+          document.getElementById('rxEtaText').textContent = '已完成';
+        } else {
+          const remainingOriginal = rxState.k - rxState.solvedOriginalCount;
+          // 减去已缓存方程带来的潜在信息抵扣，并乘以 1.25 保守系数防止尾声偏乐观
+          const effectivePending = Math.max(1, remainingOriginal - cachedLtEquations * 0.45);
+          const conservativeFramesNeeded = effectivePending * 1.25;
+          const etaSec = conservativeFramesNeeded / Math.max(0.4, frameRate);
+          document.getElementById('rxEtaText').textContent = `约 ${formatDuration(etaSec)}`;
+        }
+      }
+
+      updateBlockMatrixCells();
+    }
+
+    function updateBlockMatrixCells() {
+      const k = rxState.k;
+      const cells = rxState.matrixCells;
+      if (!k || !cells.length) return;
+
+      const displayCount = cells.length;
+      const step = k / displayCount;
+
+      for (let c = 0; c < displayCount; c++) {
+        const start = Math.floor(c * step);
+        const end = Math.max(start + 1, Math.floor((c + 1) * step));
+        let allSolved = true;
+        let anySolved = false;
+        for (let i = start; i < end; i++) {
+          if (rxState.solvedSymbols[i] !== null) anySolved = true;
+          else allSolved = false;
+        }
+        const cell = cells[c];
+        if (allSolved) {
+          cell.className = 'h-2 rounded-[2px] bg-emerald-500';
+        } else if (anySolved) {
+          cell.className = 'h-2 rounded-[2px] bg-emerald-300';
+        } else {
+          cell.className = 'h-2 rounded-[2px] bg-slate-200';
+        }
+      }
+    }
+
+    function finalizeRecoveredFile() {
+      rxState.completed = true;
+      const totalLen = rxState.totalOriginalBytes;
+      const bs = rxState.blockSize;
+      const output = new Uint8Array(totalLen);
+
+      let offset = 0;
+      for (let i = 0; i < rxState.k; i++) {
+        const block = rxState.solvedSymbols[i];
+        const copyLen = Math.min(bs, totalLen - offset);
+        output.set(block.subarray(0, copyLen), offset);
+        offset += copyLen;
+      }
+
+      const actualFileCRC = computeCRC32(output);
+      if (actualFileCRC !== rxState.fileCRC32) {
+        showToast('警告：文件整体 CRC32 校验不匹配！', 'error');
+        return;
+      }
+
+      const mimeType = guessMimeType(rxState.fileName);
+      const blob = new Blob([output], { type: mimeType });
+      rxState.objectUrl = URL.createObjectURL(blob);
+
+      const dlBtn = document.getElementById('rxDownloadBtn');
+      dlBtn.href = rxState.objectUrl;
+      dlBtn.download = rxState.fileName;
+
+      const totalSec = ((performance.now() - rxState.startTime) / 1000).toFixed(1);
+      document.getElementById('rxResultMeta').textContent = `${rxState.fileName} · ${formatBytes(totalLen)} · 用时 ${totalSec}s (有效帧 ${rxState.validFramesCount})`;
+      document.getElementById('rxResultCard').classList.remove('hidden');
+      document.getElementById('rxTipFooter').classList.add('hidden');
+      document.getElementById('rxEtaText').textContent = '已完成';
+
+      if (mimeType.startsWith('image/')) {
+        const imgEl = document.getElementById('rxImagePreview');
+        imgEl.src = rxState.objectUrl;
+        document.getElementById('rxImagePreviewWrap').classList.remove('hidden');
+      }
+
+      showToast(`还原完成！文件 ${rxState.fileName} 已通过 CRC32 校验`, 'success');
+    }
+
+    function guessMimeType(name) {
+      const ext = name.split('.').pop().toLowerCase();
+      const map = {
+        png: 'image/png',
+        jpg: 'image/jpeg',
+        jpeg: 'image/jpeg',
+        gif: 'image/gif',
+        webp: 'image/webp',
+        svg: 'image/svg+xml',
+        pdf: 'application/pdf',
+        txt: 'text/plain;charset=utf-8',
+        md: 'text/markdown;charset=utf-8',
+        json: 'application/json',
+        csv: 'text/csv',
+        zip: 'application/zip',
+      };
+      return map[ext] || 'application/octet-stream';
+    }
+
+    // -------------------- 摄像头扫码（安全上下文检测 + 自动降级回退） --------------------
+    async function toggleCamera() {
+      if (rxState.isScanning) stopCamera();
+      else await startCamera();
+    }
+
+    async function startCamera() {
+      if (!window.isSecureContext || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        showToast('浏览器拦截：摄像头仅支持 HTTPS 或 localhost 访问（不支持直接双击 file:// 打开）', 'error');
+        return;
+      }
+
+      try {
+        let stream;
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({
+            video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } },
+            audio: false
+          });
+        } catch (constraintErr) {
+          stream = await navigator.mediaDevices.getUserMedia({
+            video: true,
+            audio: false
+          });
+        }
+
+        rxState.stream = stream;
+        rxState.isScanning = true;
+
+        const video = document.getElementById('cameraVideo');
+        video.srcObject = stream;
+        await video.play();
+
+        video.classList.remove('hidden');
+        document.getElementById('cameraPlaceholder').classList.add('hidden');
+        document.getElementById('scanOverlay').classList.remove('hidden');
+        document.getElementById('rxCamDot').className = 'w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse';
+        document.getElementById('btnCameraText').textContent = '关闭摄像头';
+
+        rxState.lastFpsUpdate = performance.now();
+        rxState.scanFramesInWindow = 0;
+        scanLoop();
+      } catch (err) {
+        console.error('Camera start failed:', err);
+        const reasonMap = {
+          NotAllowedError: '摄像头权限被拒绝，或当前处于受限的 iframe 预览框中',
+          NotFoundError: '未检测到可用摄像头硬件，请检查连接',
+          NotReadableError: '摄像头正被其他软件（如会议/聊天工具）占用',
+          OverconstrainedError: '摄像头不支持所请求的分辨率参数',
+          SecurityError: '当前页面非安全上下文（需 HTTPS 或 localhost）'
+        };
+        const msg = reasonMap[err.name] || `无法开启摄像头 (${err.name || err.message})`;
+        showToast(msg, 'error');
+      }
+    }
+
+    function stopCamera() {
+      rxState.isScanning = false;
+      if (rxState.rafId) {
+        cancelAnimationFrame(rxState.rafId);
+        rxState.rafId = null;
+      }
+      if (rxState.stream) {
+        rxState.stream.getTracks().forEach(t => t.stop());
+        rxState.stream = null;
+      }
+      document.getElementById('cameraVideo').classList.add('hidden');
+      document.getElementById('cameraPlaceholder').classList.remove('hidden');
+      document.getElementById('scanOverlay').classList.add('hidden');
+      document.getElementById('rxCamDot').className = 'w-2.5 h-2.5 rounded-full bg-slate-300';
+      document.getElementById('btnCameraText').textContent = '开启摄像头扫码';
+      document.getElementById('scanFpsBadge').textContent = '0 FPS';
+    }
+
+    async function scanLoop() {
+      if (!rxState.isScanning) return;
+
+      const video = document.getElementById('cameraVideo');
+      if (video.readyState === video.HAVE_ENOUGH_DATA) {
+        rxState.scanFramesInWindow++;
+        const now = performance.now();
+        if (now - rxState.lastFpsUpdate >= 1000) {
+          const fps = Math.round((rxState.scanFramesInWindow * 1000) / (now - rxState.lastFpsUpdate));
+          document.getElementById('scanFpsBadge').textContent = `${fps} FPS`;
+          rxState.scanFramesInWindow = 0;
+          rxState.lastFpsUpdate = now;
+        }
+
+        let decodedText = null;
+        if (rxState.barcodeDetector) {
+          try {
+            const barcodes = await rxState.barcodeDetector.detect(video);
+            if (barcodes?.length) decodedText = barcodes[0].rawValue;
+          } catch (e) {
+            rxState.barcodeDetector = null;
+          }
+        }
+
+        if (!decodedText) {
+          const canvas = document.getElementById('scanOffscreenCanvas');
+          const maxDim = 900;
+          const scale = Math.min(1, maxDim / Math.max(video.videoWidth, video.videoHeight));
+          canvas.width = Math.floor(video.videoWidth * scale);
+          canvas.height = Math.floor(video.videoHeight * scale);
+          const ctx = canvas.getContext('2d', { willReadFrequently: true });
+          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+          const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+          const code = jsQR(imgData.data, imgData.width, imgData.height, { inversionAttempts: 'dontInvert' });
+          if (code?.data) decodedText = code.data;
+        }
+
+        if (decodedText) {
+          try {
+            const frameBytes = base64ToUint8(decodedText.trim());
+            if (ingestEncodedFrameBytes(frameBytes)) flashScanSuccess();
+          } catch (e) {}
+        }
+      }
+
+      rxState.rafId = requestAnimationFrame(scanLoop);
+    }
+
+    let flashTimeout = null;
+    function flashScanSuccess() {
+      const el = document.getElementById('scanFlashIndicator');
+      el.style.opacity = '1';
+      if (flashTimeout) clearTimeout(flashTimeout);
+      flashTimeout = setTimeout(() => { el.style.opacity = '0'; }, 160);
+    }
+
+    // -------------------- 单帧图片上传与剪贴板粘贴 --------------------
+    function handleTestImageUpload(event) {
+      const file = event.target.files?.[0];
+      if (!file) return;
+      decodeImageFileForTest(file);
+      event.target.value = '';
+    }
+
+    window.addEventListener('paste', (event) => {
+      if (document.getElementById('receiverView').classList.contains('hidden')) return;
+      const items = event.clipboardData?.items;
+      if (!items) return;
+      for (const item of items) {
+        if (item.type.startsWith('image/')) {
+          const blob = item.getAsFile();
+          if (blob) decodeImageFileForTest(blob);
+          break;
+        }
+      }
+    });
+
+    function decodeImageFileForTest(blob) {
+      const img = new Image();
+      const url = URL.createObjectURL(blob);
+      img.onload = () => {
+        const canvas = document.getElementById('scanOffscreenCanvas');
+        canvas.width = img.width;
+        canvas.height = img.height;
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
+        ctx.drawImage(img, 0, 0);
+        const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        const code = jsQR(imgData.data, imgData.width, imgData.height, { inversionAttempts: 'attemptBoth' });
+        URL.revokeObjectURL(url);
+
+        if (code?.data) {
+          try {
+            const bytes = base64ToUint8(code.data.trim());
+            if (ingestEncodedFrameBytes(bytes)) showToast('成功从截图解码 1 帧数据！', 'success');
+            else showToast('该帧已接收过或校验不符', 'warning');
+          } catch (e) {
+            showToast('非有效的 FountainQR 二维码', 'error');
+          }
+        } else {
+          showToast('未在截图中识别出二维码', 'error');
+        }
+      };
+      img.src = url;
+    }
+
+    // -------------------- 单机丢包回路模拟测试 --------------------
+    function runSelfLoopSimulation() {
+      if (!senderState.payloadBytes || senderState.k === 0) return;
+
+      stopPlayback();
+      resetReceiverState(true);
+      switchMode('receiver');
+      showToast('已启动单机模拟：按当前预设帧率与 25% 丢包率传输...', 'info');
+
+      let simSeed = (Math.floor(Math.random() * 0x7FFFFFFF) + 1) >>> 0;
+      if (senderState.simTimerId) clearInterval(senderState.simTimerId);
+
+      const intervalMs = Math.max(40, Math.round(1000 / senderState.fps));
+      senderState.simTimerId = setInterval(() => {
+        if (rxState.completed) {
+          clearInterval(senderState.simTimerId);
+          senderState.simTimerId = null;
+          return;
+        }
+        simSeed = (simSeed + 0x9E3779B9) >>> 0;
+        if (Math.random() < 0.25) return; // 模拟 25% 丢包
+        const { frame } = encodeFountainFrame(simSeed);
+        ingestEncodedFrameBytes(frame);
+      }, intervalMs);
+    }
+
+    window.addEventListener('DOMContentLoaded', () => {
+      drawIdleQrPlaceholder();
+    });
+  </script>
+</body>
+</html>
